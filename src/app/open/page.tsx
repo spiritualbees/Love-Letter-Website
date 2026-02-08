@@ -39,6 +39,82 @@ const PAPER_STYLE = {
   backgroundSize: "20px 20px, 20px 20px, 4px 4px, 4px 4px",
 } as const;
 
+function fireConfettiOnce(ref: React.MutableRefObject<boolean>) {
+  if (ref.current) return;
+  ref.current = true;
+  confetti({
+    particleCount: 120,
+    spread: 70,
+    origin: { y: 0.6 },
+    colors: ["#ec4899", "#f43f5e", "#a855f7", "#f472b6"],
+  });
+  setTimeout(() => {
+    confetti({
+      particleCount: 60,
+      angle: 60,
+      spread: 55,
+      origin: { x: 0.2 },
+      colors: ["#ec4899", "#f43f5e"],
+    });
+  }, 200);
+  setTimeout(() => {
+    confetti({
+      particleCount: 60,
+      angle: 120,
+      spread: 55,
+      origin: { x: 0.8 },
+      colors: ["#ec4899", "#f43f5e"],
+    });
+  }, 400);
+}
+
+function AlreadyRepliedView({
+  serverAnswer,
+  theme,
+  confettiFiredRef,
+}: {
+  serverAnswer: "yes" | "no" | null;
+  theme: { gradient: string; card: string; accent: string };
+  confettiFiredRef: React.MutableRefObject<boolean>;
+}) {
+  useEffect(() => {
+    if (serverAnswer === "yes") fireConfettiOnce(confettiFiredRef);
+  }, [serverAnswer, confettiFiredRef]);
+
+  const answerLabel = serverAnswer === "yes" ? "Yes" : "No";
+
+  return (
+    <main
+      className={`flex-1 w-full min-h-screen bg-gradient-to-br ${theme.gradient} flex flex-col items-center justify-center p-4 sm:p-6 overflow-y-auto`}
+    >
+      <div className="w-full max-w-md mx-4">
+        <div
+          className={`rounded-3xl border-2 ${theme.card} shadow-xl p-8 sm:p-10 text-center`}
+          style={{ boxShadow: "0 10px 30px -5px rgba(0,0,0,0.3), 0 4px 6px -2px rgba(0,0,0,0.15)" }}
+        >
+          <p className="text-4xl mb-4" aria-hidden>
+            💌
+          </p>
+          <h2 className="text-xl sm:text-2xl font-bold text-rose-800 font-sans mb-2">
+            You already responded: {answerLabel}!
+          </h2>
+          <p className="text-rose-600 font-sans text-sm sm:text-base">
+            No need to reply again.
+          </p>
+        </div>
+      </div>
+      <p className="pt-8 pb-2 text-center">
+        <Link
+          href="/"
+          className="text-sm text-rose-600 underline hover:text-rose-700 transition font-sans"
+        >
+          Make Your Own
+        </Link>
+      </p>
+    </main>
+  );
+}
+
 function OpenContent() {
   const searchParams = useSearchParams();
   const [letter, setLetter] = useState<LetterData | null>(null);
@@ -49,18 +125,52 @@ function OpenContent() {
   const [submitting, setSubmitting] = useState(false);
   const [noPos, setNoPos] = useState({ x: 0, y: 0 });
   const [noHasRun, setNoHasRun] = useState(false);
+  const [checkingStatus, setCheckingStatus] = useState(true);
+  const [hasReplied, setHasReplied] = useState(false);
+  const [serverAnswer, setServerAnswer] = useState<"yes" | "no" | null>(null);
+  const confettiFiredRef = useRef(false);
 
   const encoded = searchParams.get("d");
 
   useEffect(() => {
     if (!encoded) {
       setInvalid(true);
+      setCheckingStatus(false);
       return;
     }
     const data = decodeLetter(encoded);
     if (data) setLetter(data);
-    else setInvalid(true);
+    else {
+      setInvalid(true);
+      setCheckingStatus(false);
+    }
   }, [encoded]);
+
+  useEffect(() => {
+    if (!encoded || invalid) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/check?id=${encodeURIComponent(encoded)}`);
+        const json = await res.json();
+        if (cancelled) return;
+        if (json.replied === true && (json.answer === "yes" || json.answer === "no")) {
+          setHasReplied(true);
+          setServerAnswer(json.answer);
+        } else {
+          setHasReplied(false);
+          setServerAnswer(null);
+        }
+      } catch {
+        if (!cancelled) setHasReplied(false);
+      } finally {
+        if (!cancelled) setCheckingStatus(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [encoded, invalid]);
 
   const [flapOpen, setFlapOpen] = useState(false);
   const youtubePlayerRef = useRef<YouTubePlayerHandle>(null);
@@ -90,13 +200,14 @@ function OpenContent() {
   }, []);
 
   const handleSubmitReply = useCallback(async () => {
-    if (!letter) return;
+    if (!letter || !encoded) return;
     setSubmitting(true);
     try {
       const res = await fetch("/api/reply", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          id: encoded,
           answer: answer ?? "no",
           message: replyMessage.trim(),
           senderEmail: letter.senderEmail,
@@ -117,7 +228,7 @@ function OpenContent() {
     } finally {
       setSubmitting(false);
     }
-  }, [letter, answer, replyMessage]);
+  }, [letter, encoded, answer, replyMessage]);
 
   if (invalid) {
     return (
@@ -128,7 +239,7 @@ function OpenContent() {
     );
   }
 
-  if (!letter) {
+  if (!letter || checkingStatus) {
     return (
       <main className="flex-1 w-full min-h-screen bg-gradient-to-br from-rose-100 to-pink-100 flex items-center justify-center p-4 sm:p-6">
         <p className="text-rose-600">Loading...</p>
@@ -138,6 +249,16 @@ function OpenContent() {
 
   const theme = THEME_STYLES[letter.theme] ?? THEME_STYLES.pink;
   const musicId = letter.musicId ?? undefined;
+
+  if (hasReplied) {
+    return (
+      <AlreadyRepliedView
+        serverAnswer={serverAnswer}
+        theme={theme}
+        confettiFiredRef={confettiFiredRef}
+      />
+    );
+  }
 
   return (
     <>

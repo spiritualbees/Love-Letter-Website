@@ -8,12 +8,30 @@ const redis = new Redis({
   token: process.env.UPSTASH_REDIS_REST_TOKEN!,
 });
 
+const REPLY_KEY_PREFIX = "reply:";
+
 export async function POST(request: Request) {
   try {
-    const { answer, message, senderEmail, recipientName } = await request.json();
+    const { id, answer, message, senderEmail, recipientName } = await request.json();
 
-    // 1. Update Global Counters in Redis
-    if (answer === "Yes") {
+    const normalizedAnswer = typeof answer === "string" ? answer.toLowerCase() : "no";
+    const isYes = normalizedAnswer === "yes";
+
+    // 0. Idempotency: if already replied, return success without sending again
+    if (id && typeof id === "string") {
+      const existing = await redis.get<string>(`${REPLY_KEY_PREFIX}${id}`);
+      if (existing !== null && existing !== undefined) {
+        return NextResponse.json({ success: true });
+      }
+    }
+
+    // 1. Store reply status first so user cannot reply twice (if id provided)
+    if (id && typeof id === "string") {
+      await redis.set(`${REPLY_KEY_PREFIX}${id}`, normalizedAnswer);
+    }
+
+    // 2. Update Global Counters in Redis
+    if (isYes) {
       await redis.incr("val_yes_clicks");
     }
 
@@ -46,13 +64,13 @@ export async function POST(request: Request) {
       // IMPORTANT: The 'from' address must match the account we are using!
       from: `"Valentine App" <${selectedAccount.user}>`, 
       to: senderEmail,
-      subject: `💌 ${recipientName} replied: ${answer}!`,
+      subject: `💌 ${recipientName} replied: ${isYes ? "Yes" : "No"}!`,
       html: `
         <div style="font-family: sans-serif; padding: 20px; color: #333;">
           <h1 style="color: #e11d48;">Response Received!</h1>
           <p><strong>${recipientName}</strong> just opened your letter.</p>
           <hr />
-          <p><strong>Their Answer:</strong> <span style="font-size: 1.2em;">${answer}</span></p>
+          <p><strong>Their Answer:</strong> <span style="font-size: 1.2em;">${isYes ? "Yes" : "No"}</span></p>
           <p><strong>Their Message:</strong></p>
           <blockquote style="background: #fdf2f8; padding: 15px; border-left: 4px solid #e11d48;">
             ${message || "No message written."}
